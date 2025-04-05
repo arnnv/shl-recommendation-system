@@ -10,3 +10,8 @@ python-dotenv
 jq
 langchain_huggingface
 sentence-transformers
+streamlit
+fastapi
+uvicorn
+httpx
+pydantic
