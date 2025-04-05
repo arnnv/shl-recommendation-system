@@ -1,2 +1,12 @@
 requests
 bs4
+langchain
+langchain-google-genai
+faiss-cpu
+pandas
+rich
+langchain_community
+python-dotenv
+jq
+langchain_huggingface
+sentence-transformers
