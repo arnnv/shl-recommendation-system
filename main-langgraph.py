@@ -1,4 +1,3 @@
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,7 +9,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 from pydantic import BaseModel
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph
 from langchain_core.documents import Document
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
