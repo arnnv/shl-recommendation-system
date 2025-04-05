@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import json
+import re
+import numpy as np
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -12,10 +14,8 @@ from langgraph.graph import StateGraph, END
 from langchain_core.documents import Document
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import PromptTemplate
-import re
-import json
-import numpy as np
+from langchain_community.retrievers import BM25Retriever
+from langchain.prompts import PromptTemplate
 
 llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
 embedding_model = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
@@ -55,6 +55,32 @@ else:
     print("Loading FAISS vector store...")
     vectorstore = FAISS.load_local(VECTORSTORE_PATH, embedding_model, allow_dangerous_deserialization=True)
 
+bm25_retriever = BM25Retriever.from_documents(documents)
+bm25_retriever.k = 10
+
+dense_retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 10, "lambda_mult": 0.7})
+
+class HybridRetriever:
+    def __init__(self, dense_retriever, sparse_retriever, alpha=0.7):
+        self.dense = dense_retriever
+        self.sparse = sparse_retriever
+        self.alpha = alpha
+
+    def invoke(self, query):
+        dense_results = self.dense.invoke(query)
+        sparse_results = self.sparse.invoke(query)
+        combined = {}
+        for doc in dense_results:
+            combined[doc.page_content] = self.alpha
+        for doc in sparse_results:
+            combined[doc.page_content] = combined.get(doc.page_content, 0) + (1 - self.alpha)
+        ranked = sorted(combined.items(), key=lambda x: x[1], reverse=True)
+        return [
+            next(d for d in dense_results + sparse_results if d.page_content == content)
+            for content, _ in ranked[:10]
+        ]
+
+retriever = HybridRetriever(dense_retriever, bm25_retriever)
 
 query_prompt = PromptTemplate.from_template("""
 Extract the following structured information from the job description below:
@@ -63,6 +89,9 @@ Extract the following structured information from the job description below:
 - preferences (assessment-related preferences like adaptive, coding, remote etc.)
 - duration (if mentioned)
 - test_types (type of assessments expected like coding, numerical, etc.)
+                                            
+MAKE SURE THE SKILL NAMES ARE CORRECT AND RAG OPTIMIZED.
+For example: Java Script should be JavaScript.
 
 Respond only in this format:
 {{
@@ -74,18 +103,17 @@ Respond only in this format:
 }}
 
 Job description:
-\"\"\"
+<job_description>
 {job_description}
-\"\"\"
+</job_description>
 """)
 
 def extract_query_info(state):
     query = state.input
     prompt = query_prompt.format(job_description=query)
     response = llm.invoke(prompt).content
-
-    # Strip code block if LLM returns it like ```json ... ```
     response = re.sub(r"```json|```", "", response.strip())
+    print(response)
 
     try:
         parsed = json.loads(response)
@@ -93,28 +121,15 @@ def extract_query_info(state):
         print("Failed to parse query info:", e)
         parsed = {"role": "", "skills": [], "preferences": [], "duration": "", "test_types": []}
 
-    # Embed only the values (combine into one string)
     query_str = f"{parsed['role']} " + " ".join(parsed["skills"] + parsed["preferences"] + parsed["test_types"])
     return {"query_info": query_str, "input": query}
 
 def perform_rag(state):
     query_info = state.query_info
-
-    docs_with_scores = vectorstore.similarity_search_with_score(query_info, k=10)
-
-    results = []
-    for doc, score in docs_with_scores:
-        try:
-            validated = SHLAssessment(**doc.metadata).model_dump()
-            validated["score"] = score
-            results.append(validated)
-        except Exception as e:
-            print("Validation failed for one result:", e)
-
-    return {"results": results}
+    retrieved_docs = retriever.invoke(query_info)
+    return {"retrieved_docs": retrieved_docs, "query_info": query_info}
 
 def clean_json(obj):
-    """Recursively convert all NumPy types to native Python types."""
     if isinstance(obj, dict):
         return {k: clean_json(v) for k, v in obj.items()}
     elif isinstance(obj, list):
@@ -124,77 +139,70 @@ def clean_json(obj):
     else:
         return obj
 
-def final_filtering(state):
+prompt_template = PromptTemplate.from_template("""
+You are a helpful assistant tasked with selecting the most relevant SHL assessments for a given job.
+
+Here is a summary of the job description:
+{query}
+
+Below are some SHL assessments (with their details):
+{docs}
+
+Please select the minimum 1 and maximum 10 most relevant assessments and return them in JSON format with the following fields for each:
+- name
+- url
+- remote_testing_support
+- adaptive_irt_support
+- duration
+- test_types
+
+Respond ONLY with a JSON code block like:
+```json
+[{{"name": "...", "url": "...", "remote_testing_support": "...", "adaptive_irt_support": "...", "duration": "...", "test_types": [...]}}]
+```
+""")
+
+def rerank_and_filter(state):
     query_info = state.query_info
-    assessments = state.results
+    docs = state.retrieved_docs
 
-    clean_assessments = clean_json(assessments)
+    doc_strings = [
+        f"{doc.metadata['name']} - {doc.page_content}" for doc in docs
+    ]
+    doc_block = "\n".join([f"{i+1}. {s}" for i, s in enumerate(doc_strings)])
 
-    template = PromptTemplate.from_template("""
-    You are a helpful assistant tasked with selecting the most relevant SHL assessments for a given job.
-
-    Here is a summary of the job description:
-    {query_info}
-
-    Below are some SHL assessments (with their details):
-    {assessments}
-
-    Please select the minimum 1 and maximum 10 most relevant assessments and return them in JSON format with the following fields for each:
-    - name
-    - url
-    - remote_testing_support
-    - adaptive_irt_support
-    - duration
-    - test_types
-
-    Respond ONLY with a JSON code block like:
-    ```json
-    [{{"name": "...", "url": "...", "remote_testing_support": "...", "adaptive_irt_support": "...", "duration": "...", "test_types": [...]}}]
-    ```
-    """)
-
-    prompt = template.format(
-        query_info=query_info,
-        assessments=json.dumps(clean_assessments, indent=2)
-    )
-
-    response = llm.invoke(prompt).content
-
-    match = re.search(r"```json\s*(.*?)\s*```", response, re.DOTALL)
-    if match:
-        response = match.group(1).strip()
+    prompt = prompt_template.format(query=query_info, docs=doc_block)
+    response = llm.invoke(prompt).content.strip()
 
     try:
+        match = re.search(r"```json\s*(.*?)\s*```", response, re.DOTALL)
+        if match:
+            response = match.group(1).strip()
         parsed = json.loads(response)
     except json.JSONDecodeError as e:
         print("❌ Failed to parse LLM output as JSON:", e)
         print("Raw response:", response)
-        return {"final_recommendations": []}
+        parsed = []
 
-    return {"final_recommendations": parsed}
-
-from typing import Optional, Dict, Any
-from pydantic import BaseModel
+    return {"final_recommendations": clean_json(parsed)}
 
 class GraphState(BaseModel):
     input: str
     query_info: Optional[str] = None
-    results: Optional[List[Dict[str, Any]]] = None
+    retrieved_docs: Optional[List[Document]] = None
     final_recommendations: Optional[List[Dict[str, Any]]] = None
 
 workflow = StateGraph(GraphState)
 workflow.add_node("extract_info", extract_query_info)
 workflow.add_node("rag", perform_rag)
-workflow.add_node("final_filtering", final_filtering)
+workflow.add_node("filter", rerank_and_filter)
 
 workflow.set_entry_point("extract_info")
 workflow.add_edge("extract_info", "rag")
-workflow.add_edge("rag", "final_filtering")
-workflow.set_finish_point("final_filtering")
+workflow.add_edge("rag", "filter")
+workflow.set_finish_point("filter")
 
 app = workflow.compile()
-
-app
 
 def recommend_assessments(job_description: str):
     result = app.invoke({"input": job_description})
