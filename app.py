@@ -3,29 +3,6 @@ import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 
-# Custom CSS for styling
-st.markdown(
-    """
-    <style>
-    .dataframe th, .dataframe td {
-        padding: 10px;
-        text-align: left;
-    }
-    .dataframe th {
-        # background-color: #f4f4f4;
-    }
-    .dataframe td a {
-        # color: #007BFF;
-        text-decoration: none;
-    }
-    .dataframe td a:hover {
-        text-decoration: underline;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
 st.title("SHL Assessment Recommender")
 
 st.write("Enter a job description or provide a URL to get the most relevant SHL assessments.")
