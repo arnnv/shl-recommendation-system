@@ -411,9 +411,19 @@ def extract_assessment_details(assessment):
         return assessment
     
     # Extract Description from meta tag
-    meta_description = soup.find('meta', attrs={'name': 'description'})
-    if meta_description and 'content' in meta_description.attrs:
-        assessment['description'] = meta_description['content'].strip()
+    # First try to find the h4 Description heading and its sibling p tag
+    description_heading = soup.find('h4', string=re.compile('Description', re.IGNORECASE))
+    if description_heading:
+        # Find the sibling paragraph tag that contains the full description
+        description_p = description_heading.find_next_sibling('p')
+        if description_p:
+            assessment['description'] = description_p.get_text().strip()
+    
+    # If no description found via h4+p, fallback to meta tag
+    if not assessment['description']:
+        meta_description = soup.find('meta', attrs={'name': 'description'})
+        if meta_description and 'content' in meta_description.attrs:
+            assessment['description'] = meta_description['content'].strip()
         
     # Extract Duration from Assessment length section
     duration_section = soup.find(string=re.compile('Assessment length', re.IGNORECASE))
@@ -856,8 +866,8 @@ def process_page_assessments(page_assessments, section_assessments):
             all_assessments.append(updated_assessment)
             progress.update(task, advance=1)
             
-            # Save partial results every 10 assessments
-            if (len(all_assessments) % 10) == 0:
+            # Save partial results every 12 assessments
+            if (len(all_assessments) % 12) == 0:
                 save_partial_results()
     
     # Display the assessments found on this page
