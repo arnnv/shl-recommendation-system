@@ -1,7 +1,5 @@
 import json
 import os
-import pandas as pd
-from typing import List, Dict, Any
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -12,8 +10,6 @@ from langchain.prompts import PromptTemplate
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.chains import create_retrieval_chain, LLMChain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_community.document_loaders import JSONLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 # Import configuration
 import config

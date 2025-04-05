@@ -30,9 +30,6 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
-from rich.live import Live
-from rich import print as rprint
-from rich.text import Text
 
 # Initialize Rich console
 console = Console()
@@ -546,7 +543,7 @@ def handle_pagination(soup, current_url, solution_type):
         if current_page:
             next_sibling = current_page.find_next_sibling('a')
             if next_sibling:
-                console.print(f"Found next page link via current page sibling")
+                console.print("Found next page link via current page sibling")
                 next_link = next_sibling
     
     # Method 4: Find "start" parameter in URL and increment it
@@ -709,7 +706,7 @@ def crawl_section(start_url, section_type, solution_type, max_pages=None):
         
         # Skip if already processed
         if current_url in processed_pages:
-            console.print(f"[bold green]✓ Skipping already processed home page[/bold green]")
+            console.print("[bold green]✓ Skipping already processed home page[/bold green]")
         else:
             # Process the home page
             soup = get_page_content(current_url)
@@ -792,7 +789,7 @@ def crawl_section(start_url, section_type, solution_type, max_pages=None):
         
         # Check if we should stop (no more assessments found)
         if len(all_found_urls) == 0:
-            console.print(f"[bold yellow]No assessment links found on page. Checking next page...[/bold yellow]")
+            console.print("[bold yellow]No assessment links found on page. Checking next page...[/bold yellow]")
             empty_page_count += 1
             if empty_page_count >= max_empty_pages:
                 console.print(f"[bold yellow]Reached {empty_page_count} consecutive empty pages. Assuming end of section.[/bold yellow]")
@@ -805,7 +802,7 @@ def crawl_section(start_url, section_type, solution_type, max_pages=None):
             if page_assessments:
                 process_page_assessments(page_assessments, section_assessments)
             elif len(all_found_urls) > 0:
-                console.print(f"[bold green]All assessments on this page were already processed.[/bold green]")
+                console.print("[bold green]All assessments on this page were already processed.[/bold green]")
         
         # Move to next page
         current_start += 12
