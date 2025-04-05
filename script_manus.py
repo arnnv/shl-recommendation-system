@@ -147,8 +147,8 @@ def get_page_content(url):
         BeautifulSoup: Parsed HTML content
     """
     try:
-        # Add a random delay to avoid being blocked
-        time.sleep(random.uniform(1, 2))
+        # Add a short random delay to avoid being blocked
+        time.sleep(random.uniform(0.3, 0.8))
         
         response = requests.get(url, headers=HEADERS)
         response.raise_for_status()  # Raise an exception for HTTP errors
@@ -390,8 +390,81 @@ def handle_pagination(soup, current_url, solution_type):
     Returns:
         str or None: URL of the next page, or None if there are no more pages
     """
-    # Look for "Next" link in pagination
-    next_link = soup.find('a', string=re.compile('Next', re.IGNORECASE))
+    # Debug section: inspect pagination area if possible
+    pagination_area = soup.find('div', class_=re.compile('pagination|paging'))
+    if pagination_area:
+        print(f"Found pagination area with {len(pagination_area.find_all('a'))} links")
+    else:
+        print("No pagination div found, searching broadly for Next link")
+    
+    # Look for "Next" link in pagination (try multiple approaches)
+    next_link = None
+    
+    # Method 1: Standard link with "Next" text
+    next_candidates = soup.find_all('a', string=re.compile('Next', re.IGNORECASE))
+    if next_candidates:
+        print(f"Found {len(next_candidates)} 'Next' text links")
+        next_link = next_candidates[0]
+    
+    # Method 2: Link with a next/arrow class
+    if not next_link:
+        next_candidates = soup.find_all('a', class_=re.compile('next|arrow|forward', re.IGNORECASE))
+        if next_candidates:
+            print(f"Found {len(next_candidates)} links with next/arrow class")
+            next_link = next_candidates[0]
+    
+    # Method 3: Look for pagination elements and find the one after current
+    if not next_link:
+        # Try to find the current page marker and get the next sibling
+        current_page = soup.find('a', class_=re.compile('active|current', re.IGNORECASE))
+        if current_page:
+            next_sibling = current_page.find_next_sibling('a')
+            if next_sibling:
+                print(f"Found next page link via current page sibling")
+                next_link = next_sibling
+    
+    # Method 4: Find "start" parameter in URL and increment it
+    if not next_link:
+        parsed_url = urlparse(current_url)
+        query_params = parse_qs(parsed_url.query)
+        
+        if 'start' in query_params:
+            try:
+                # SHL uses 'start' parameter with multiples of 12 (0, 12, 24, etc.)
+                start = int(query_params['start'][0])
+                # Create a new URL with incremented start parameter
+                query_params['start'] = [str(start + 12)]
+                query_params['type'] = [solution_type]  # Ensure type parameter
+                
+                # Reconstruct URL
+                query_string = urlencode(query_params, doseq=True)
+                parts = list(parsed_url)
+                parts[4] = query_string
+                
+                next_url = urlunparse(parts)
+                print(f"Created next URL by incrementing start parameter: {next_url}")
+                return next_url
+            except (ValueError, IndexError):
+                pass
+        elif 'start' not in query_params and 'page=1' in current_url:
+            # If we're on page 1 but no start parameter, add it
+            query_params['start'] = ['12']  # Move to items 13-24
+            query_params['type'] = [solution_type]
+            
+            query_string = urlencode(query_params, doseq=True)
+            parts = list(parsed_url)
+            parts[4] = query_string
+            
+            next_url = urlunparse(parts)
+            print(f"Created first pagination URL with start=12: {next_url}")
+            return next_url
+        elif 'start' not in query_params:
+            # If we're on first page with no parameters yet
+            base_url = f"{CATALOG_URL}?type={solution_type}&start=12"
+            print(f"Created first pagination URL: {base_url}")
+            return base_url
+    
+    # Process the next link if found by any method
     if next_link and next_link.get('href'):
         next_url = urljoin(BASE_URL, next_link.get('href'))
         
@@ -414,8 +487,16 @@ def handle_pagination(soup, current_url, solution_type):
             print("Warning: Next URL is the same as current URL. Stopping pagination.")
             return None
             
+        print(f"Found valid next page URL: {next_url}")
         return next_url
     
+    # If we're on a URL without start parameter, add it for the first pagination
+    if 'start=' not in current_url:
+        next_url = f"{current_url}{'&' if '?' in current_url else '?'}start=12"
+        print(f"No explicit next link found, trying basic pagination: {next_url}")
+        return next_url
+    
+    print("No next page found after trying all methods")
     return None
 
 def crawl_section(start_url, section_type, solution_type, max_pages=None):
@@ -437,6 +518,8 @@ def crawl_section(start_url, section_type, solution_type, max_pages=None):
     # Check if we should resume from a previous page
     current_url = start_url
     page_num = 1
+    empty_page_count = 0  # Counter for consecutive empty pages
+    max_empty_pages = 3   # Maximum number of consecutive empty pages before giving up
     
     if section_type == 'pre-packaged' and crawl_state['pre_packaged_last_page']:
         current_url = crawl_state['pre_packaged_last_page']
@@ -448,6 +531,7 @@ def crawl_section(start_url, section_type, solution_type, max_pages=None):
         print(f"Resuming {section_type} crawl from: {current_url} (page {page_num})")
     
     while current_url and (max_pages is None or page_num <= max_pages):
+        print(f"--------------------------------------------")
         print(f"Crawling {section_type} page {page_num}: {current_url}")
         
         # Update the crawl state with the current URL and page number
@@ -459,22 +543,65 @@ def crawl_section(start_url, section_type, solution_type, max_pages=None):
             crawl_state['individual_page_num'] = page_num
         save_crawl_state()
         
+        # Add short delay to avoid rate limiting
+        delay = random.uniform(0.2, 0.8)
+        print(f"Waiting {delay:.2f} seconds before fetching...")
+        time.sleep(delay)
+        
         soup = get_page_content(current_url)
         
         if not soup:
             print(f"Error: Failed to fetch content for {current_url}")
+            # Don't immediately stop - try next page if possible
+            empty_page_count += 1
+            
+            if empty_page_count >= max_empty_pages:
+                print(f"Reached maximum number of consecutive empty pages ({max_empty_pages}). Stopping section crawl.")
+                break
+                
+            print("Attempting to find next page despite fetch failure...")
+            # Try to construct next page URL based on current URL pattern
+            parsed_url = urlparse(current_url)
+            query_params = parse_qs(parsed_url.query)
+            
+            if 'start' in query_params:
+                try:
+                    # Assume standard pagination with 'start' parameter
+                    start = int(query_params['start'][0])
+                    query_params['start'] = [str(start + 12)]
+                    query_string = urlencode(query_params, doseq=True)
+                    parts = list(parsed_url)
+                    parts[4] = query_string
+                    current_url = urlunparse(parts)
+                    page_num += 1
+                    print(f"Generated next URL: {current_url}")
+                    continue
+                except (ValueError, IndexError):
+                    pass
+            
+            # If we can't construct next URL, stop this section
             break
+        
+        # Reset empty page counter if we successfully got content
+        empty_page_count = 0
         
         # Extract assessments from this page
         page_assessments = extract_assessment_links(soup, section_type)
         print(f"Found {len(page_assessments)} {section_type} solutions")
         
+        # If page has no assessments but we found content, it might be rate limiting or wrong page
         if len(page_assessments) == 0:
             print(f"Warning: No assessments found on {section_type} page {page_num}. This might indicate an issue.")
             # Try to debug by checking the page content
             page_title = soup.title.string if soup.title else "No title"
             print(f"Page title: {page_title}")
             
+            # Check for rate limiting indicators in the page
+            if "rate limit" in soup.get_text().lower() or "too many requests" in soup.get_text().lower():
+                print("Detected possible rate limiting. Waiting longer before retry...")
+                time.sleep(random.uniform(3, 5))  # Longer wait for rate limiting, keep this longer
+                continue  # Retry the same URL
+                
             # Check if we're on the right type of page
             if section_type == 'pre-packaged' and 'type=2' not in current_url:
                 print(f"Error: URL doesn't contain correct type parameter for {section_type}")
@@ -498,6 +625,23 @@ def crawl_section(start_url, section_type, solution_type, max_pages=None):
                 print(f"Trying with fixed URL: {fixed_url}")
                 current_url = fixed_url
                 continue
+            
+            # If no obvious issue found, attempt to check for "no results" message
+            no_results_indicators = [
+                "no matching products", "no results found", "no products found", 
+                "no assessments found", "no items found"
+            ]
+            page_text = soup.get_text().lower()
+            if any(indicator in page_text for indicator in no_results_indicators):
+                print("Detected 'no results' message. This appears to be the actual end of listings.")
+                # Mark as complete by breaking
+                break
+            
+            # Increment empty page counter and try next page if not too many empty pages
+            empty_page_count += 1
+            if empty_page_count >= max_empty_pages:
+                print(f"Reached maximum number of consecutive empty pages ({max_empty_pages}). Stopping section crawl.")
+                break
         
         # Process each assessment to get detailed information
         for i, assessment in enumerate(page_assessments):
@@ -510,32 +654,71 @@ def crawl_section(start_url, section_type, solution_type, max_pages=None):
             if (len(all_assessments) % 10) == 0:
                 save_partial_results()
         
-        # Check for next page
+        # Check for next page - this is the key part that fixes the issue
         next_url = handle_pagination(soup, current_url, solution_type)
-        if not next_url:
-            print(f"No more pages found for {section_type}. Ending pagination.")
-            break
         
+        # If we couldn't find a next page but we're still on the first page
+        # and we successfully found assessments, attempt to force pagination
+        if not next_url and page_num == 1 and len(page_assessments) > 0:
+            print("First page completed successfully but no pagination found. Attempting to force pagination...")
+            next_url = f"{CATALOG_URL}?type={solution_type}&start=12"
+            print(f"Forced next URL: {next_url}")
+        
+        # If we still don't have a next URL, and we've processed at least one page with assessments
+        # consider stopping only if empty_page_count is 0 (meaning this wasn't an error condition)
+        if not next_url:
+            if len(section_assessments) > 0 and empty_page_count == 0:
+                print(f"No more pages found for {section_type} after {page_num} successful pages. Ending pagination.")
+                break
+            elif empty_page_count > 0:
+                print(f"No next page found after {empty_page_count} empty pages. Trying one more attempt...")
+                # If we can't find pagination but have had empty pages, try incrementing start parameter as last resort
+                parsed_url = urlparse(current_url)
+                query_params = parse_qs(parsed_url.query)
+                if 'start' in query_params:
+                    try:
+                        start = int(query_params['start'][0])
+                        query_params['start'] = [str(start + 12)]
+                        query_string = urlencode(query_params, doseq=True)
+                        parts = list(parsed_url)
+                        parts[4] = query_string
+                        next_url = urlunparse(parts)
+                        print(f"Last resort: Generated next URL by incrementing start: {next_url}")
+                    except (ValueError, IndexError):
+                        break
+                else:
+                    break
+                
         current_url = next_url
         page_num += 1
         
         # Save partial results after each page
         save_partial_results()
     
-    # Set this section as completed in crawl state
-    if section_type == 'pre-packaged':
-        crawl_state['pre_packaged_last_page'] = None  # Mark as completed
-        crawl_state['pre_packaged_page_num'] = 1
+    # IMPORTANT: Only set this section as completed if we had a successful crawl
+    # and found at least some assessments and reached a natural end 
+    # (not stopped due to max_empty_pages or other error)
+    if len(section_assessments) > 0 and empty_page_count < max_empty_pages:
+        if section_type == 'pre-packaged':
+            print(f"Marking pre-packaged section as complete after finding {len(section_assessments)} assessments.")
+            crawl_state['pre_packaged_last_page'] = None  # Mark as completed
+            crawl_state['pre_packaged_page_num'] = 1
+        else:
+            print(f"Marking individual section as complete after finding {len(section_assessments)} assessments.")
+            crawl_state['individual_last_page'] = None  # Mark as completed
+            crawl_state['individual_page_num'] = 1
+        save_crawl_state()
     else:
-        crawl_state['individual_last_page'] = None  # Mark as completed
-        crawl_state['individual_page_num'] = 1
-    save_crawl_state()
+        print(f"NOT marking {section_type} section as complete - crawl was incomplete or unsuccessful.")
+        print(f"Found {len(section_assessments)} assessments with {empty_page_count} empty pages.")
+        # Keep the current URL in state so we can resume
     
     return section_assessments
 
 def crawl_shl_assessments(max_pages=None):
     """
     Main function to crawl SHL assessments and save data to JSON.
+    Sequential approach: first all pre-packaged solutions, then all individual solutions.
     
     Args:
         max_pages (int, optional): Maximum number of pages to crawl per section. If None, crawl all pages.
@@ -558,22 +741,19 @@ def crawl_shl_assessments(max_pages=None):
     signal.signal(signal.SIGTERM, signal_handler)
     
     try:
-        # Check if the crawl was already completed
-        if crawl_state.get('completed', False):
-            print("Previous crawl was completed. Starting a fresh crawl...")
-            # Reset the crawl state
-            crawl_state = {
-                "last_crawl_time": datetime.now().isoformat(),
-                "pre_packaged_last_page": None,
-                "pre_packaged_page_num": 1,
-                "individual_last_page": None,
-                "individual_page_num": 1,
-                "completed": False
-            }
-            save_crawl_state()
+        print("\n============================================================")
+        print("STARTING SEQUENTIAL CRAWL: Pre-packaged first, then Individual")
+        print("============================================================\n")
         
-        # Main catalog page only needs to be crawled if this is a fresh start
+        # Always reset the completion status at the start
+        # We'll explicitly track each section's completion rather than relying on 
+        # a global completion flag
+        crawl_state['completed'] = False
+        
+        # First, crawl main catalog page if this is a fresh start
+        # We still do this to seed some initial data
         if not crawl_state.get('last_crawl_time'):
+            print(f"\n=== SEEDING FROM MAIN CATALOG PAGE ===")
             print(f"Crawling main catalog page: {CATALOG_URL}")
             soup = get_page_content(CATALOG_URL)
             
@@ -587,38 +767,78 @@ def crawl_shl_assessments(max_pages=None):
                 print(f"Found {len(individual_assessments)} individual test solutions on main page")
                 
                 # Process assessments from main page
-                for i, assessment in enumerate(pre_packaged_assessments + individual_assessments):
-                    print(f"Processing assessment {i+1}/{len(pre_packaged_assessments) + len(individual_assessments)}: {assessment['name']}")
-                    updated_assessment = extract_assessment_details(assessment)
-                    all_assessments.append(updated_assessment)
-                    
-                    # Save partial results every 10 assessments
-                    if (len(all_assessments) % 10) == 0:
-                        save_partial_results()
-        
-        # Crawl Pre-packaged Job Solutions pages
-        if crawl_state.get('pre_packaged_last_page') is not None or not crawl_state.get('last_crawl_time'):
-            pre_packaged_url = f"{CATALOG_URL}?type={PRE_PACKAGED_TYPE}"
-            crawl_section(pre_packaged_url, 'pre-packaged', PRE_PACKAGED_TYPE, max_pages)
+                if pre_packaged_assessments or individual_assessments:
+                    for i, assessment in enumerate(pre_packaged_assessments + individual_assessments):
+                        print(f"Processing assessment {i+1}/{len(pre_packaged_assessments) + len(individual_assessments)}: {assessment['name']}")
+                        updated_assessment = extract_assessment_details(assessment)
+                        all_assessments.append(updated_assessment)
+                        
+                        # Save partial results every 10 assessments
+                        if (len(all_assessments) % 10) == 0:
+                            save_partial_results()
         else:
-            print("Skipping Pre-packaged Job Solutions section (already completed)")
+            print("\n=== RESUMING FROM PREVIOUS CRAWL ===")
+                
+        # =======================================================
+        # STEP 1: CRAWL ALL PRE-PACKAGED JOB SOLUTIONS FIRST
+        # =======================================================
+        print("\n\n=== STARTING/RESUMING PRE-PACKAGED JOB SOLUTIONS ===")
+        print("(This must complete fully before moving to Individual Solutions)")
         
-        # Crawl Individual Test Solutions pages
-        if crawl_state.get('individual_last_page') is not None or not crawl_state.get('last_crawl_time'):
-            individual_url = f"{CATALOG_URL}?type={INDIVIDUAL_TYPE}"
-            crawl_section(individual_url, 'individual', INDIVIDUAL_TYPE, max_pages)
-        else:
-            print("Skipping Individual Test Solutions section (already completed)")
+        # Force this to ensure we don't skip it, even if state file suggests it's complete
+        pre_packaged_url = f"{CATALOG_URL}?type={PRE_PACKAGED_TYPE}"
         
-        # Mark crawl as completed
+        # Only respect last page from state if it exists, otherwise start fresh
+        if not crawl_state.get('pre_packaged_last_page'):
+            print("Starting Pre-packaged from the beginning")
+            crawl_state['pre_packaged_last_page'] = pre_packaged_url
+            crawl_state['pre_packaged_page_num'] = 1
+            save_crawl_state()
+        
+        # Call crawl_section for Pre-packaged Job Solutions
+        print("\nStarting Pre-packaged section crawl...")
+        pre_packaged_results = crawl_section(pre_packaged_url, 'pre-packaged', PRE_PACKAGED_TYPE, max_pages)
+        print(f"\n=== COMPLETED PRE-PACKAGED JOB SOLUTIONS, FOUND {len(pre_packaged_results)} ASSESSMENTS ===")
+        
+        # Save intermediate results after pre-packaged section
+        save_partial_results()
+        
+        # =======================================================
+        # STEP 2: CRAWL ALL INDIVIDUAL TEST SOLUTIONS NEXT
+        # =======================================================
+        print("\n\n=== STARTING/RESUMING INDIVIDUAL TEST SOLUTIONS ===")
+        
+        # Force this to ensure we don't skip it, even if state file suggests it's complete
+        individual_url = f"{CATALOG_URL}?type={INDIVIDUAL_TYPE}"
+        
+        # Only respect last page from state if it exists, otherwise start fresh
+        if not crawl_state.get('individual_last_page'):
+            print("Starting Individual from the beginning")
+            crawl_state['individual_last_page'] = individual_url
+            crawl_state['individual_page_num'] = 1
+            save_crawl_state()
+            
+        # Call crawl_section for Individual Test Solutions
+        print("\nStarting Individual section crawl...")
+        individual_results = crawl_section(individual_url, 'individual', INDIVIDUAL_TYPE, max_pages)
+        print(f"\n=== COMPLETED INDIVIDUAL TEST SOLUTIONS, FOUND {len(individual_results)} ASSESSMENTS ===")
+        
+        # ===================================================
+        # SAVE FINAL RESULTS
+        # ===================================================
+        
+        # Now mark crawl as completed since we've done both sections sequentially
         crawl_state['completed'] = True
         save_crawl_state()
         
         # Save the final data to the main output file
+        print(f"\nSaving final results ({len(all_assessments)} assessments) to {OUTPUT_FILE}")
         with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
             json.dump(all_assessments, f, indent=2, ensure_ascii=False)
         
-        print(f"Crawling complete. Found {len(all_assessments)} assessments. Data saved to {OUTPUT_FILE}")
+        print(f"\n=== CRAWLING COMPLETE ===")
+        print(f"Found {len(all_assessments)} total assessments")
+        print(f"Data saved to {OUTPUT_FILE}")
         return all_assessments
     
     except Exception as e:
