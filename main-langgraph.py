@@ -37,7 +37,11 @@ with open(SHL_FILE, "r", encoding="utf-8") as f:
 
 documents = [
     Document(
-        page_content=entry["description"],
+        page_content=(
+            f"{entry['name']} - {entry['description']} "
+            f"Type: {', '.join(entry.get('test_types', []))}. "
+            f"Duration: {entry.get('duration', 'N/A')}."
+        ),
         metadata=entry
     )
     for entry in shl_data
@@ -51,17 +55,47 @@ else:
     print("Loading FAISS vector store...")
     vectorstore = FAISS.load_local(VECTORSTORE_PATH, embedding_model, allow_dangerous_deserialization=True)
 
+
+query_prompt = PromptTemplate.from_template("""
+Extract the following structured information from the job description below:
+- role (job title or general function)
+- skills (list of technologies, concepts, or traits expected)
+- preferences (assessment-related preferences like adaptive, coding, remote etc.)
+- duration (if mentioned)
+- test_types (type of assessments expected like coding, numerical, etc.)
+
+Respond only in this format:
+{{
+    "role": "...",
+    "skills": ["...", "..."],
+    "preferences": ["...", "..."],
+    "duration": "...",
+    "test_types": ["...", "..."]
+}}
+
+Job description:
+\"\"\"
+{job_description}
+\"\"\"
+""")
+
 def extract_query_info(state):
     query = state.input
-
-    prompt = (
-        "Extract important details like role, skills, assessment preferences, duration, test types "
-        "from the following job description. Be concise:\n\n"
-        f"{query}\n\nReturn a short structured summary for retrieval."
-    )
+    prompt = query_prompt.format(job_description=query)
     response = llm.invoke(prompt).content
-    print(response)
-    return {"query_info": response, "input": query}
+
+    # Strip code block if LLM returns it like ```json ... ```
+    response = re.sub(r"```json|```", "", response.strip())
+
+    try:
+        parsed = json.loads(response)
+    except Exception as e:
+        print("Failed to parse query info:", e)
+        parsed = {"role": "", "skills": [], "preferences": [], "duration": "", "test_types": []}
+
+    # Embed only the values (combine into one string)
+    query_str = f"{parsed['role']} " + " ".join(parsed["skills"] + parsed["preferences"] + parsed["test_types"])
+    return {"query_info": query_str, "input": query}
 
 def perform_rag(state):
     query_info = state.query_info
@@ -167,8 +201,8 @@ def recommend_assessments(job_description: str):
     return result["final_recommendations"]
 
 jd = """
-I am hiring for an analyst and wants applications to screen using Cognitive and personality tests, 
-what options are available within 45 mins.
+Looking to hire mid-level professionals who are proficient in Python, SQL and Java Script. Need an 
+assessment package that can test all skills with max duration of 60 minutes. 
 """
 
 print(json.dumps(recommend_assessments(jd), indent=2))
