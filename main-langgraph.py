@@ -40,7 +40,10 @@ documents = [
         page_content=(
             f"{entry['name']} - {entry['description']} "
             f"Type: {', '.join(entry.get('test_types', []))}. "
-            f"Duration: {entry.get('duration', 'N/A')}."
+            f"Duration: {entry.get('duration', 'N/A')}. "
+            f"Remote: {entry.get('remote_testing_support', 'Unknown')}. "
+            f"Adaptive: {entry.get('adaptive_irt_support', 'Unknown')}. "
+            f"URL: {entry.get('url', 'N/A')}."
         ),
         metadata=entry
     )
@@ -89,9 +92,6 @@ Extract the following structured information from the job description below:
 - preferences (assessment-related preferences like adaptive, coding, remote etc.)
 - duration (if mentioned)
 - test_types (type of assessments expected like coding, numerical, etc.)
-                                            
-MAKE SURE THE SKILL NAMES ARE CORRECT AND RAG OPTIMIZED.
-For example: Java Script should be JavaScript.
 
 Respond only in this format:
 {{
@@ -113,7 +113,6 @@ def extract_query_info(state):
     prompt = query_prompt.format(job_description=query)
     response = llm.invoke(prompt).content
     response = re.sub(r"```json|```", "", response.strip())
-    print(response)
 
     try:
         parsed = json.loads(response)
@@ -167,7 +166,7 @@ def rerank_and_filter(state):
     docs = state.retrieved_docs
 
     doc_strings = [
-        f"{doc.metadata['name']} - {doc.page_content}" for doc in docs
+        f"{doc.metadata['name']} - {doc.page_content}\nURL: {doc.metadata.get('url', 'N/A')}" for doc in docs
     ]
     doc_block = "\n".join([f"{i+1}. {s}" for i, s in enumerate(doc_strings)])
 
