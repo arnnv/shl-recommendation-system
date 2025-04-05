@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
+from bs4 import BeautifulSoup
 
 # Custom CSS for styling
 st.markdown(
@@ -27,9 +28,25 @@ st.markdown(
 
 st.title("SHL Assessment Recommender")
 
-st.write("Enter a job description to get the most relevant SHL assessments.")
+st.write("Enter a job description or provide a URL to get the most relevant SHL assessments.")
 
-job_description = st.text_area("Job Description:")
+# Create tabs for input methods
+job_description_tab, url_tab = st.tabs(["Job Description", "Job URL"])
+
+job_description = ""
+
+with job_description_tab:
+    job_description = st.text_area("Job Description:")
+
+with url_tab:
+    url = st.text_input("Job Description URL:")
+    if url:
+        try:
+            page = requests.get(url)
+            soup = BeautifulSoup(page.content, 'html.parser')
+            job_description = soup.get_text()  # Directly use the parsed job description
+        except Exception as e:
+            st.error(f"Failed to parse job description from URL: {e}")
 
 if st.button("Get Recommendations"):
     if job_description.strip() == "":
@@ -41,7 +58,17 @@ if st.button("Get Recommendations"):
                 recommendations = response.json().get("recommendations", [])
                 if recommendations:
                     df = pd.DataFrame(recommendations)
-                    df.columns = ["Assessment Name", "URL", "Remote Testing Support", "Adaptive/IRT Support", "Duration", "Test Types"]
+                    # Assign correct column names
+                    df = df.rename(columns={
+                        "name": "Assessment Name",
+                        "url": "URL",
+                        "remote_testing_support": "Remote Testing Support",
+                        "adaptive_irt_support": "Adaptive/IRT Support",
+                        "duration": "Duration",
+                        "test_types": "Test Types"
+                    })
+                    # Drop the 'description' column if it exists
+                    df = df.drop(columns=['description'], errors='ignore')
                     # Make URLs clickable
                     df['URL'] = df['URL'].apply(lambda x: f'<a href="{x}" target="_blank">{x}</a>')
                     st.write(df.to_html(escape=False, index=False), unsafe_allow_html=True)
