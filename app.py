@@ -2,6 +2,29 @@ import streamlit as st
 import requests
 import pandas as pd
 
+# Custom CSS for styling
+st.markdown(
+    """
+    <style>
+    .dataframe th, .dataframe td {
+        padding: 10px;
+        text-align: left;
+    }
+    .dataframe th {
+        # background-color: #f4f4f4;
+    }
+    .dataframe td a {
+        # color: #007BFF;
+        text-decoration: none;
+    }
+    .dataframe td a:hover {
+        text-decoration: underline;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 st.title("SHL Assessment Recommender")
 
 st.write("Enter a job description to get the most relevant SHL assessments.")
@@ -19,7 +42,9 @@ if st.button("Get Recommendations"):
                 if recommendations:
                     df = pd.DataFrame(recommendations)
                     df.columns = ["Assessment Name", "URL", "Remote Testing Support", "Adaptive/IRT Support", "Duration", "Test Types"]
-                    st.dataframe(df)
+                    # Make URLs clickable
+                    df['URL'] = df['URL'].apply(lambda x: f'<a href="{x}" target="_blank">{x}</a>')
+                    st.write(df.to_html(escape=False, index=False), unsafe_allow_html=True)
                 else:
                     st.write("No recommendations found.")
             else:
