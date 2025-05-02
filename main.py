@@ -16,7 +16,7 @@ from rich.panel import Panel
 from langchain.prompts import PromptTemplate
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
-from langchain_deepseek import ChatDeepSeek
+from langchain_anthropic import ChatAnthropic
 from langchain_openai import OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from langgraph.graph import StateGraph
@@ -28,7 +28,7 @@ console = Console()
 
 # --- Environment Variable Loading and Validation ---
 required_env_vars = [
-    "DEEPSEEK_API_KEY",
+    "ANTHROPIC_API_KEY",
     "QDRANT_URL",
     "QDRANT_API_KEY",
     "OPENAI_API_KEY",
@@ -39,14 +39,14 @@ if missing_vars:
     console.print(f"[bold red]Error: Missing required environment variables: {', '.join(missing_vars)}[/bold red]")
     raise ValueError(f"Missing environment variables: {', '.join(missing_vars)}")
 
-deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
+anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
 qdrant_url = os.getenv("QDRANT_URL")
 qdrant_api_key = os.getenv("QDRANT_API_KEY")
 openai_api_key = os.getenv("OPENAI_API_KEY")
 
 # --- LLM and Embedding Model Initialization ---
 console.print("[cyan]Initializing LLM and Embedding Model...[/cyan]")
-llm = ChatDeepSeek(model="deepseek-chat", temperature=0, api_key=deepseek_api_key)
+llm = ChatAnthropic(model="claude-3-7-sonnet-latest", temperature=0, api_key=anthropic_api_key)
 embedding_model = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=openai_api_key)
 console.print("[green]LLM and Embedding Model Initialized.[/green]")
 
@@ -157,7 +157,6 @@ retriever = HybridRetriever(dense=dense_retriever, sparse=bm25_retriever)
 
 query_prompt = PromptTemplate.from_template("""
 Extract the following structured information from the job description below.
-Important: When listing skills or preferences, identify multi-word technical terms (e.g., 'Java Script', 'SQL Server', 'Machine Learning') and keep them as single strings. Do not split them.
 
 Fields to extract:
 - role (job title or general function)
@@ -165,6 +164,12 @@ Fields to extract:
 - preferences (assessment-related preferences like adaptive, coding, remote etc.)
 - duration (if mentioned)
 - test_types (type of assessments expected like coding, numerical, etc.)
+
+IMPORTANT: If the job description doesn't explicitly list all skills, preferences, or test types, infer them based on the role and industry standards. For example:
+- For a "Java Developer" role, include skills like "Java", "Spring Boot", "SQL", etc. even if not explicitly mentioned
+- For a "Data Scientist" role, include skills like "Python", "Machine Learning", "Statistics", etc.
+- For technical roles, include preferences like "coding assessments" if appropriate
+- For managerial roles, include skills like "Leadership", "Communication", etc.
 
 Respond only in this format:
 {{
@@ -179,6 +184,8 @@ Job description:
 <job_description>
 {job_description}
 </job_description>
+
+Important: When listing skills or preferences, identify multi-word technical terms (e.g., 'Java Script', 'SQL Server', 'Machine Learning') and keep them as single strings. Do not split them. Eg: 'Java Script' should be JavaScript and 'Machine Learning' should be MachineLearning
 """)
 
 async def extract_query_info(state):
@@ -224,18 +231,14 @@ Here is a summary of the job description:
 Below are some SHL assessments (with their details):
 {docs}
 
-Please select the minimum 1 and maximum 10 most relevant assessments and return them in JSON format with the following fields for each:
-- name
-- url
-- remote_testing_support
-- adaptive_irt_support
-- duration
-- test_types
+Please select the minimum 1 and maximum 10 most relevant assessments by their index numbers (Assessment 1, Assessment 2, etc.).
 
-Respond ONLY with a JSON code block like:
+Respond ONLY with a JSON array of indices like:
 ```json
-[{{"name": "...", "url": "...", "remote_testing_support": "...", "adaptive_irt_support": "...", "duration": "...", "test_types": [...]}}]
+[1, 5, 8]
 ```
+
+Do not include any other information in your response, just the array of indices.
 """)
 
 async def rerank_and_filter(state):
@@ -245,11 +248,11 @@ async def rerank_and_filter(state):
 
     # Optimized: Send only key info to LLM for re-ranking
     doc_strings = [
-        f"Name: {doc.metadata['name']}\nDescription: {doc.metadata['description']}\nTest Types: {', '.join(doc.metadata.get('test_types', []))}\nDuration: {doc.metadata.get('duration', 'N/A')}\nURL: {doc.metadata.get('url', 'N/A')}\nRemote Testing Support: {doc.metadata.get('remote_testing_support', 'Unknown')}\nAdaptive/IRT Support: {doc.metadata.get('adaptive_irt_support', 'Unknown')}"
+        f"Name: {doc.metadata['name']}\nDescription: {doc.metadata['description']}\nTest Types: {', '.join(doc.metadata.get('test_types', []))}\nDuration: {doc.metadata.get('duration', 'N/A')}\nRemote Testing Support: {doc.metadata.get('remote_testing_support', 'Unknown')}\nAdaptive/IRT Support: {doc.metadata.get('adaptive_irt_support', 'Unknown')}"
         for doc in docs
     ]
 
-    doc_block = "\n\n".join([f"Assessment {i+1}:\n{s}" for i, s in enumerate(doc_strings)]) # Changed separator
+    doc_block = "\n\n".join([f"Assessment {i+1}:\n{s}" for i, s in enumerate(doc_strings)])
 
     prompt = prompt_template.format(query=query_info, docs=doc_block)
     
@@ -259,17 +262,39 @@ async def rerank_and_filter(state):
     console.print(f"[magenta]LLM Re-ranking/Filtering took: {end_time_llm_rerank - start_time_llm_rerank:.2f} seconds[/magenta]")
 
     try:
+        # Extract JSON array of indices
         match = re.search(r"```json\s*(.*?)\s*```", response, re.DOTALL)
         if match:
             response = match.group(1).strip()
-        parsed = json.loads(response)
-        console.print(f"[green]Successfully parsed final {len(parsed)} recommendations from LLM.[/green]")
+        
+        # Parse the indices
+        indices = json.loads(response)
+        console.print(f"[green]Successfully parsed {len(indices)} assessment indices from LLM.[/green]")
+        
+        # Convert indices to actual assessment data
+        # Note: Indices in the response are 1-based, but list indices are 0-based
+        recommendations = []
+        for idx in indices:
+            if 1 <= idx <= len(docs):
+                doc = docs[idx-1]
+                recommendations.append({
+                    "name": doc.metadata.get("name", ""),
+                    "url": doc.metadata.get("url", ""),
+                    "remote_testing_support": doc.metadata.get("remote_testing_support", "Unknown"),
+                    "adaptive_irt_support": doc.metadata.get("adaptive_irt_support", "Unknown"),
+                    "duration": doc.metadata.get("duration", "N/A"),
+                    "test_types": doc.metadata.get("test_types", [])
+                })
+            else:
+                console.print(f"[yellow]Warning: Index {idx} is out of range (1-{len(docs)})[/yellow]")
+        
+        console.print(f"[green]Successfully converted {len(recommendations)} indices to full assessment data.[/green]")
     except json.JSONDecodeError as e:
-        console.print(f"[bold red]❌ Failed to parse final recommendations JSON:[/bold red] {e}")
+        console.print(f"[bold red]❌ Failed to parse indices JSON:[/bold red] {e}")
         console.print(f"[red]Raw LLM Response:[/red]\n{response}")
-        parsed = []
+        recommendations = []
 
-    return {"final_recommendations": parsed}
+    return {"final_recommendations": recommendations}
 
 class GraphState(BaseModel):
     input: str

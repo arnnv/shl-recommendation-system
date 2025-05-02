@@ -6,9 +6,9 @@ fastapi
 uvicorn
 langchain_core
 langchain_community
-langchain_deepseek
-langchain-openai
-langchain-qdrant
+langchain_anthropic
+langchain_openai
+langchain_qdrant
 langgraph
 rank_bm25
 # Frontend dependencies

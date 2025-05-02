@@ -71,7 +71,7 @@ This project helps recruiters and HR professionals quickly identify the most rel
 
 4. Set up environment variables:
    - Copy `.env.example` to `.env`
-   - Add your DeepSeek API key, OpenAI API key, Qdrant URL, and Qdrant API key
+   - Add your Anthropic API key, OpenAI API key, Qdrant URL, and Qdrant API key
 
 ## Usage
 
@@ -132,7 +132,7 @@ This will crawl SHL's product catalog, extract assessment information, and save 
 
 - **LangGraph**: Orchestrates the recommendation workflow with multiple steps
 - **LangChain**: Connects the LLM components and provides document handling
-- **DeepSeek**: Powers the language understanding and reasoning components
+- **Claude 3.7 Sonnet**: Powers the language understanding and reasoning components
 - **OpenAI Embeddings**: Generates vector embeddings for semantic search
 - **Qdrant**: Vector database for storing and retrieving embeddings
 - **BM25**: Sparse retrieval algorithm for keyword-based search
