@@ -1,0 +1,34 @@
+# Git
+.git/
+.gitignore
+
+# Docker
+.dockerignore
+Dockerfile
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.ruff_cache/
+
+# Virtual environment
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment variables
+.env
+*.env
+
+# Deployment specific (not needed with Dockerfile)
+Procfile
+runtime.txt
+RAILWAY_DEPLOY_INSTRUCTIONS.md
+
+# OS-specific files
+.DS_Store
+Thumbs.db
